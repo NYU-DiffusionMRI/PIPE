@@ -1,0 +1,438 @@
+%% PIPE 
+clc,clear,close all
+root_data = '/Volumes/labspace/Santiago/PIPE_GE/MAGNUS_data';
+
+nii_dwi = load_untouch_nii(fullfile(root_data,'dwi.nii'));
+nii_b = load_untouch_nii(fullfile(root_data,'bval_actual.nii'));
+nii_g = load_untouch_nii(fullfile(root_data,'bvec_actual.nii'));
+nominal_protocol = load(fullfile(root_data,'nominal_protocol.mat'));
+
+% Loading big library of SM basis functions
+root_git = '/Users/coelhs01/Documents/SantiagoCoelho/Git/PIPE';
+nametag='25_06_20_largesvd_LTE_b10k_GitHub_v0.mat'; % broad range for library
+LIB = load(fullfile(root_git,nametag));
+
+nii_mask = load_untouch_nii(fullfile(root_data,'brain_mask.nii'));
+mask = logical(nii_mask.img);
+
+NB_target = size(nii_b.img,4);
+b0_id = [1 NB_target];
+b0 = mean(nii_dwi.img(:,:,:,b0_id),4);
+dwi = PIPE.vectorize(nii_dwi.img./b0,mask);
+
+
+%% Computing alpha (linear pseudoinversion) for the whole brain
+clc,close all
+
+% New_N=[4 2 0 0]; idN=9; % THIS
+% New_N=[4 1 0 0]; idN=10; % THIS
+% New_N=[3 1 0 0]; idN=11; % THIS
+New_N=[4 3 0 0]; idN=12; % THISot
+% New_N=[4 3 1 0]; idN=13; % THIS
+% New_N=[5 3 0 0]; idN=14; % THIS
+% New_N=[4 2 1 0]; idN=15; % THIS
+% New_N=[5 3 0 0]; idN=16; % THIS
+
+New_Nlm=[New_N(1) New_N(2)*5 New_N(3)*9 New_N(4)*13];
+nlm0=LIB.n0; nlm2=LIB.n2*5; nlm4=LIB.n4*9; nlm6=LIB.n6*13;
+new_nlm=[1:New_Nlm(1) (nlm0+1):(nlm0+New_Nlm(2)) (nlm0+nlm2+1):(nlm0+nlm2+New_Nlm(3)) (nlm0+nlm2+nlm4+1):(nlm0+nlm2+nlm4+New_Nlm(4))];
+
+CS_phase = 1; Lmax = 6;
+NB_target = size(nii_b.img,4);
+Nvox_mask = size(dwi,2);
+Cond_alpha = zeros(1,Nvox_mask);
+gamma_hat = zeros(length(new_nlm),Nvox_mask);
+bval_masked = PIPE.vectorize(nii_b.img,mask);
+
+
+gx = PIPE.vectorize(nii_g.img(:,:,:,:,1),mask);
+gy = PIPE.vectorize(nii_g.img(:,:,:,:,2),mask);
+gz = PIPE.vectorize(nii_g.img(:,:,:,:,3),mask);
+bvec_masked = cat(3,gx,gy,gz);
+clearvars gx gy gz
+bvec_masked = permute(bvec_masked,[1 3 2]);
+threshold_in_b = LIB.bmax;
+N_all_nlm = LIB.n0+LIB.n2*5+LIB.n4*9+LIB.n6*13;
+bmax_lib = LIB.bmax;
+
+U0=LIB.U0(:,1:LIB.n0);
+U2=LIB.U2(:,1:LIB.n2);
+U4=LIB.U4(:,1:LIB.n4);
+U6=LIB.U6(:,1:LIB.n6);
+
+U0_target_flat = PIPE.Chebyshev_interpolation_U_b(U0,nominal_protocol.b,bmax_lib);
+U2_target_flat = PIPE.Chebyshev_interpolation_U_b(U2,nominal_protocol.b,bmax_lib);
+U4_target_flat = PIPE.Chebyshev_interpolation_U_b(U4,nominal_protocol.b,bmax_lib);
+U6_target_flat = PIPE.Chebyshev_interpolation_U_b(U6,nominal_protocol.b,bmax_lib);
+Ylm=SMI.get_even_SH(nominal_protocol.g,Lmax,CS_phase);
+Y00=Ylm(:,1);
+Y2m=Ylm(:,2:6);
+Y4m=Ylm(:,7:15);
+Y6m=Ylm(:,16:28);
+alpha_nlm_flat = zeros(NB_target,N_all_nlm);
+for ll=1:NB_target
+    U0Y0=kron(U0_target_flat(ll,:),Y00(ll,:));
+    U2Y2=kron(U2_target_flat(ll,:),Y2m(ll,:));
+    U4Y4=kron(U4_target_flat(ll,:),Y4m(ll,:));
+    U6Y6=kron(U6_target_flat(ll,:),Y6m(ll,:));
+    alpha_nlm_flat(ll,:)=[U0Y0 U2Y2 U4Y4 U6Y6];
+end
+dwi_no_b0 = dwi/(4*pi);
+gamma_hat_flat = alpha_nlm_flat(:,new_nlm)\dwi_no_b0;
+gamma_hat_flat = PIPE.vectorize(gamma_hat_flat,mask);
+
+
+%%
+
+tic
+parfor ii=1:Nvox_mask  %parfor loop takes 4.36s for 1000 vox, for loop takes 19.76
+    current_b=bval_masked(:,ii)';
+    if any(current_b>threshold_in_b)
+        continue
+    end
+    current_dirs=bvec_masked(:,:,ii);
+    Ylm=SMI.get_even_SH(current_dirs,Lmax,CS_phase);
+    Y00=Ylm(:,1);
+    Y2m=Ylm(:,2:6);
+    Y4m=Ylm(:,7:15);
+    Y6m=Ylm(:,16:28);
+    U0_target = PIPE.Chebyshev_interpolation_U_b(U0,current_b,bmax_lib);
+    U2_target = PIPE.Chebyshev_interpolation_U_b(U2,current_b,bmax_lib);
+    U4_target = PIPE.Chebyshev_interpolation_U_b(U4,current_b,bmax_lib);
+    U6_target = PIPE.Chebyshev_interpolation_U_b(U6,current_b,bmax_lib);
+    alpha_nlm=zeros(NB_target,N_all_nlm);
+    for ll=1:NB_target
+        U0Y0=kron(U0_target(ll,:),Y00(ll,:));
+        U2Y2=kron(U2_target(ll,:),Y2m(ll,:));
+        U4Y4=kron(U4_target(ll,:),Y4m(ll,:));
+        U6Y6=kron(U6_target(ll,:),Y6m(ll,:));
+        alpha_nlm(ll,:)=[U0Y0 U2Y2 U4Y4 U6Y6];
+    end
+    s=svd(alpha_nlm(:,new_nlm),'econ');
+    Cond_alpha(ii)=s(1)/s(end);
+    dwi_no_b0=dwi(:,ii)/(4*pi);
+    gamma_hat(:,ii)=alpha_nlm(:,new_nlm)\dwi_no_b0;
+end
+t=toc;
+fprintf('================== Done with computing alpha in %f seconds\n',t)
+
+Cond_alpha=RICEtools.vectorize(Cond_alpha,mask);
+gamma_hat=RICEtools.vectorize(gamma_hat,mask);
+
+
+IMGUI(Cond_alpha,[0 200]), set(gcf, 'Position', [83.5714 29.7333 168.2857 40.3333])
+IMGUI(gamma_hat,[-2 1]*1e-3), set(gcf, 'Position', [83.5714 29.7333 168.2857 40.3333])
+IMGUI(gamma_hat_flat,[-2 1]*1e-3), set(gcf, 'Position', [83.5714 29.7333 168.2857 40.3333])
+
+%% check ratio and dot product
+clc,close all, clearvars offset
+for ii=1:Nvox_mask  %parfor loop takes 4.36s for 1000 vox, for loop takes 19.76
+    current_b=bval_masked(:,ii)';
+    current_dirs=bvec_masked(:,:,ii);
+    offset(1,ii) = mean(current_b(bvalue>0.01)./bvalue(bvalue>0.01));
+    offset(2,ii) = mean(dot(current_dirs(bvalue>0.01,:),bvec_keep(bvalue>0.01,:),2));
+end
+offset=RICEtools.vectorize(offset,mask);
+IMGUI(offset,[0.8 1.2])
+
+%% plot gamma00
+clc,close all
+allMAPS = cat(4,gamma_hat(:,:,:,1:4),gamma_hat_flat(:,:,:,1:4));
+slice=34; clims=[-0.002 -0.001;-0.002 0.002;-0.003 0.003;0 0.004; -0.002 -0.001;-0.002 0.002;-0.003 0.003;0 0.004;-0.04 0;repmat([-2 2]*1e-3,10,1)];
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[98 107 2379 1098]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=3,\ell=0,m=0}$','$\hat{\gamma}_{n=4,\ell=0,m=0}$',...
+          '$\hat{\gamma}_{n=1,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=3,\ell=0,m=0}$','$\hat{\gamma}_{n=4,\ell=0,m=0}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,2,[],1),
+
+%% plot gamma00 differences
+clc,close all
+allMAPS = gamma_hat(:,:,:,1:4)-gamma_hat_flat(:,:,:,1:4);
+slice=34; clims=[-1 1]*1e-3;
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[98 107 2379 1098]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=3,\ell=0,m=0}$','$\hat{\gamma}_{n=4,\ell=0,m=0}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,1,[],1),
+
+%% plotting 2D spatially varying bval
+clc,close all
+allMAPS = bval2d_norm(:,:,:,2:11);
+allMAPS = bval2d_norm(:,:,:,100:109);
+slice=34; clims=[0.9 1.1];
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[98 107 2379 1098]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=3,\ell=0,m=0}$','$\hat{\gamma}_{n=4,\ell=0,m=0}$',...
+          '$\hat{\gamma}_{n=1,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=3,\ell=0,m=0}$','$\hat{\gamma}_{n=4,\ell=0,m=0}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,[],2,[],1),
+
+
+
+
+%% Plotting second order
+clc,close all
+allMAPS = cat(4,gamma_hat(:,:,:,5:9),gamma_hat_flat(:,:,:,5:9));
+slice=34; clims=repmat([-2 2]*1e-3,10,1);
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[98 107 2379 1098]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=2,m=-2}$','$\hat{\gamma}_{n=1,\ell=2,m=-1}$','$\hat{\gamma}_{n=1,\ell=2,m=0}$','$\hat{\gamma}_{n=1,\ell=2,m=1}$','$\hat{\gamma}_{n=1,\ell=2,m=2}$',...
+          '$\hat{\gamma}_{n=1,\ell=2,m=-2}$','$\hat{\gamma}_{n=1,\ell=2,m=-1}$','$\hat{\gamma}_{n=1,\ell=2,m=0}$','$\hat{\gamma}_{n=1,\ell=2,m=1}$','$\hat{\gamma}_{n=1,\ell=2,m=2}$'}
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,2,[],1),
+
+allMAPS = cat(4,gamma_hat(:,:,:,10:14),gamma_hat_flat(:,:,:,10:14));
+slice=34; clims=repmat([-2 2]*1e-3,10,1);
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[98 107 2379 1098]), colormap gray
+nametags={'$\hat{\gamma}_{n=2,\ell=2,m=-2}$','$\hat{\gamma}_{n=2,\ell=2,m=-1}$','$\hat{\gamma}_{n=2,\ell=2,m=0}$','$\hat{\gamma}_{n=2,\ell=2,m=1}$','$\hat{\gamma}_{n=2,\ell=2,m=2}$',...
+          '$\hat{\gamma}_{n=2,\ell=2,m=-2}$','$\hat{\gamma}_{n=2,\ell=2,m=-1}$','$\hat{\gamma}_{n=2,\ell=2,m=0}$','$\hat{\gamma}_{n=2,\ell=2,m=1}$','$\hat{\gamma}_{n=2,\ell=2,m=2}$'}
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,2,[],1),
+
+%% Plotting second order differences
+clc,close all
+allMAPS = gamma_hat(:,:,:,5:9) - gamma_hat_flat(:,:,:,5:9);
+slice=34; clims=repmat([-2 2]*1e-4,10,1);
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[98 107 2379 1098]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=2,m=-2}$','$\hat{\gamma}_{n=1,\ell=2,m=-1}$','$\hat{\gamma}_{n=1,\ell=2,m=0}$','$\hat{\gamma}_{n=1,\ell=2,m=1}$','$\hat{\gamma}_{n=1,\ell=2,m=2}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,1,[],1),
+
+allMAPS = gamma_hat(:,:,:,10:14) - gamma_hat_flat(:,:,:,10:14);
+slice=34; clims=repmat([-2 2]*1e-4,10,1);
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[98 107 2379 1098]), colormap gray
+nametags={'$\hat{\gamma}_{n=2,\ell=2,m=-2}$','$\hat{\gamma}_{n=2,\ell=2,m=-1}$','$\hat{\gamma}_{n=2,\ell=2,m=0}$','$\hat{\gamma}_{n=2,\ell=2,m=1}$','$\hat{\gamma}_{n=2,\ell=2,m=2}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,1,[],1),
+
+
+
+
+
+% MAGNUS.bval_factor_norm=bval2d_norm;
+% MAGNUS.bval_final=bval2d*bmax_meas;
+% MAGNUS.Cond_alpha=Cond_alpha;
+% MAGNUS.bmax_meas=bmax_meas;
+% MAGNUS.gv_real_norm=gv_real_all;
+% save('/Volumes/labspace/Santiago/Experiments_2022_11_ISMRM_global_fitting_SVD/test_2022_11_09s_MAGNUS_protocol_data.mat','-struct','MAGNUS')
+
+%%
+clc,close all
+allMAPS=gamma_hat(:,:,:,[1:4 1 5:9]);
+slice=34; clims=[-0.002 -0.001;-0.002 0.002;-0.003 0.003;0 0.004;-0.04 0;repmat([-2 2]*1e-3,10,1)];
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[134 509 2087 686]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=3,\ell=0,m=0}$','$\hat{\gamma}_{n=4,\ell=0,m=0}$','',...
+          '$\hat{\gamma}_{n=1,\ell=2,m=-2}$','$\hat{\gamma}_{n=1,\ell=2,m=-1}$','$\hat{\gamma}_{n=1,\ell=2,m=0}$','$\hat{\gamma}_{n=1,\ell=2,m=1}$','$\hat{\gamma}_{n=1,\ell=2,m=2}$',...
+          '$\hat{\gamma}_{n=2,\ell=2,m=-2}$','$\hat{\gamma}_{n=2,\ell=2,m=-1}$','$\hat{\gamma}_{n=2,\ell=2,m=0}$','$\hat{\gamma}_{n=2,\ell=2,m=1}$','$\hat{\gamma}_{n=2,\ell=2,m=2}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,2,[],1),
+
+allMAPS=gamma_hat(:,:,:,[5:9 10:14]);
+slice=34; clims=repmat([-2 2]*1e-3,10,1);
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[134 509 2087 686]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=2,m=-2}$','$\hat{\gamma}_{n=1,\ell=2,m=-1}$','$\hat{\gamma}_{n=1,\ell=2,m=0}$','$\hat{\gamma}_{n=1,\ell=2,m=1}$','$\hat{\gamma}_{n=1,\ell=2,m=2}$',...
+          '$\hat{\gamma}_{n=2,\ell=2,m=-2}$','$\hat{\gamma}_{n=2,\ell=2,m=-1}$','$\hat{\gamma}_{n=2,\ell=2,m=0}$','$\hat{\gamma}_{n=2,\ell=2,m=1}$','$\hat{\gamma}_{n=2,\ell=2,m=2}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,2,[],1,0),
+
+
+%%
+clc,close all
+allMAPS=gamma_hat(:,:,:,[1:4 1 5:9 10:14]);
+slice=34; clims=[-0.002 -0.001;-0.002 0.002;-0.003 0.003;0 0.004;-0.04 0;repmat([-2 2]*1e-3,5,1);repmat([-2 2]*1e-3,5,1)];
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[345 249 1822 958]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=4,\ell=0,m=0}$','',...
+          '$\hat{\gamma}_{n=1,\ell=2,m=-2}$','$\hat{\gamma}_{n=1,\ell=2,m=-1}$','$\hat{\gamma}_{n=1,\ell=2,m=0}$','$\hat{\gamma}_{n=1,\ell=2,m=1}$','$\hat{\gamma}_{n=1,\ell=2,m=2}$',...
+          '$\hat{\gamma}_{n=2,\ell=2,m=-2}$','$\hat{\gamma}_{n=2,\ell=2,m=-1}$','$\hat{\gamma}_{n=2,\ell=2,m=0}$','$\hat{\gamma}_{n=2,\ell=2,m=1}$','$\hat{\gamma}_{n=2,\ell=2,m=2}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,3,[],1),
+
+WrapperPlotManySlices(gamma_hat(:,:,:,5:19), slice,repmat([-2 2]*1e-3,20,1),[],3,[],1),
+
+%%
+clc,close all
+GAMMA_hat=RICEtools.vectorize(gamma_hat,mask);
+GAMMA_hat_flat=RICEtools.vectorize(gamma_hat_flat,mask);
+
+SNR=100;
+NNtag=['test_2022_11_09_svd_LTEfixedTE_nlmSET',num2str(idN),'_b15k_NN_SNR'];
+filename_NN=fullfile(root_data,'/labspace/Santiago/Experiments_General/Experiments_2022_11_ISMRM_global_fitting_SVD/',[NNtag,num2str(SNR),'.mat']);
+NN=load(filename_NN);
+
+
+psitag='\hat{\gamma}_{n,\ell,m}(x,p_{\ell m})';
+
+paramNames={'$f$','$D_\mathrm{a}\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\|\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\perp\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$f_\mathrm{w}$','$p_2$'};
+param_lims=[0 1;0 3;0 3;0 2;0 0.5];
+
+% Gamma fitted
+tic
+for ii=1:5
+    kernel_target_fit(:,ii)=NN.out{ii}.NET_TRAINED(GAMMA_hat(:,:),'useGPU','no','showResources','no')';
+    kernel_target_fit_flat(:,ii)=NN.out{ii}.NET_TRAINED(GAMMA_hat_flat(:,:),'useGPU','no','showResources','no')';
+%     id_mins=kernel_target_fit(:,ii)<param_lims(ii,1);
+%     id_maxs=kernel_target_fit(:,ii)>param_lims(ii,2);
+%     kernel_target_fit(id_mins,ii)=param_lims(ii,1);
+%     kernel_target_fit(id_maxs,ii)=param_lims(ii,2);
+    fprintf('================== Done with param %d/5\n',ii)
+end
+toc
+kernel_fit=RICEtools.vectorize(kernel_target_fit',mask);
+kernel_fit_flat=RICEtools.vectorize(kernel_target_fit_flat',mask);
+
+% IMGUI(cat(4,kernel_fit(:,:,:,1),kernel_fit(:,:,:,2)/3,kernel_fit(:,:,:,3)/3,kernel_fit(:,:,:,4)/1.5,kernel_fit(:,:,:,5)),[0 1])
+
+slice=32;
+allMAPS=flip(permute(kernel_fit,[2 1 3 4]),1);
+c_lims=[0 1;1 3;1 3;0 1.5;0 0.5];
+figure('Position',[152 803 2200 321]), colormap gray
+WrapperPlotManySlices(allMAPS, slice,c_lims,paramNames,1,[],1),
+
+slice=62;
+allMAPS=flip(permute(kernel_fit,[3 1 2 4]),2);
+c_lims=[0 1;1 3;1 3;0 1.5;0 0.5];
+figure('Position',[152 402 2200 321]), colormap gray
+WrapperPlotManySlices(allMAPS, slice,c_lims,paramNames,1,[],1),
+
+
+slice=32;
+allMAPS=flip(permute(cat(4,kernel_fit,kernel_fit_flat),[2 1 3 4]),1);
+c_lims=[0 1;1 3;1 3;0 1.5;0 0.5;0 1;1 3;1 3;0 1.5;0 0.5];
+figure('Position',[77 165 2367 1091]), colormap gray
+WrapperPlotManySlices(allMAPS, slice,c_lims,cat(2,paramNames(1:5),paramNames(1:5)),2,[],1),
+
+slice=62;
+allMAPS=flip(permute(cat(4,kernel_fit,kernel_fit_flat),[3 1 2 4]),2);
+c_lims=[0 1;1 3;1 3;0 1.5;0 0.5;0 1;1 3;1 3;0 1.5;0 0.5];
+figure('Position',[77 165 2367 1091]), colormap gray
+WrapperPlotManySlices(allMAPS, slice,c_lims,cat(2,paramNames(1:5),paramNames(1:5)),2,[],1),
+
+%%
+
+
+
+
+
+%%
+clc,close all
+slice=50;
+
+allMAPS=gamma_hat(:,:,:,[1:4 1 5:9]);
+clims=[-0.002 -0.001;-0.002 0.002;-0.003 0.003;0 0.004;-0.04 0;repmat([-2 2]*1e-3,10,1)];
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[134 509 2087 686]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=3,\ell=0,m=0}$','$\hat{\gamma}_{n=4,\ell=0,m=0}$','',...
+          '$\hat{\gamma}_{n=1,\ell=2,m=-2}$','$\hat{\gamma}_{n=1,\ell=2,m=-1}$','$\hat{\gamma}_{n=1,\ell=2,m=0}$','$\hat{\gamma}_{n=1,\ell=2,m=1}$','$\hat{\gamma}_{n=1,\ell=2,m=2}$',...
+          '$\hat{\gamma}_{n=2,\ell=2,m=-2}$','$\hat{\gamma}_{n=2,\ell=2,m=-1}$','$\hat{\gamma}_{n=2,\ell=2,m=0}$','$\hat{\gamma}_{n=2,\ell=2,m=1}$','$\hat{\gamma}_{n=2,\ell=2,m=2}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,2,[],1),
+
+allMAPS=gamma_hat(:,:,:,[5:9 10:14]);
+clims=repmat([-2 2]*1e-3,10,1);
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+figure('Position',[134 509 2087 686]), colormap gray
+nametags={'$\hat{\gamma}_{n=1,\ell=2,m=-2}$','$\hat{\gamma}_{n=1,\ell=2,m=-1}$','$\hat{\gamma}_{n=1,\ell=2,m=0}$','$\hat{\gamma}_{n=1,\ell=2,m=1}$','$\hat{\gamma}_{n=1,\ell=2,m=2}$',...
+          '$\hat{\gamma}_{n=2,\ell=2,m=-2}$','$\hat{\gamma}_{n=2,\ell=2,m=-1}$','$\hat{\gamma}_{n=2,\ell=2,m=0}$','$\hat{\gamma}_{n=2,\ell=2,m=1}$','$\hat{\gamma}_{n=2,\ell=2,m=2}$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,2,[],1,0),
+
+
+%QQ
+allMAPS=flip(permute(kernel_fit,[2 1 3 4]),1);
+c_lims=[0 1;1 3;1 3;0 1.5;0 0.5];
+figure('Position',[152 803 2200 321]), colormap gray
+WrapperPlotManySlices(allMAPS, slice,c_lims,paramNames,1,[],1),
+
+fits_MAGNUS.gamma_hat = gamma_hat;
+fits_MAGNUS.kernel_fit = kernel_fit;
+% save('/Users/coelhs01/Documents/SantiagoCoelho/NYU_Postdoc_MyScience/MATLAB/General_Scripts/codes_2023/2023_06_June/Magnus_fits_flat_tensor_field.mat','-struct','fits_MAGNUS')
+save('/Users/coelhs01/Documents/SantiagoCoelho/NYU_Postdoc_MyScience/MATLAB/General_Scripts/codes_2023/2023_06_June/Magnus_fits_real_tensor_field.mat','-struct','fits_MAGNUS')
+
+
+
+%% Computing signal rotational invariants
+clc,close all
+
+new_b = 0:0.5:10;
+U0S0_new_b_flat = Chebyshev_interpolation_U_b(U0S0,new_b,bmax_lib);
+U2S2_new_b_flat = Chebyshev_interpolation_U_b(U2S2,new_b,bmax_lib);
+U4S4_new_b_flat = Chebyshev_interpolation_U_b(U4S4,new_b,bmax_lib);
+U6S6_new_b_flat = Chebyshev_interpolation_U_b(U6S6,new_b,bmax_lib);
+
+dwi_no_b0=dwi/(4*pi);
+gamma_hat_flat=alpha_nlm_flat(:,new_nlm)\dwi_no_b0;
+% gamma_hat_flat=RICEtools.vectorize(gamma_hat_flat,mask);
+
+n_ell = New_N(1:2);
+[gamma_RI,gamma_RI_redundant,gamma_average_redundant] = ComputeRotationallyInvariantGamma(gamma_hat_flat,n_ell);
+
+
+gamma_RI = RICEtools.vectorize(gamma_RI,mask);
+
+S0_newb = U0S0_new_b_flat(new_nlm(1:New_N(1)),:)' * gamma_RI(1:New_N(1),:);
+S0_newb = RICEtools.vectorize(S0_newb,mask);
+
+% gamma_hat_flat is [120   120    66    19]
+
+IMGUI(gamma_RI,[0 1e-2])
+IMGUI(abs(S0_newb),[0 5e-2])
+
+%% Computing signal rotational invariants through projections on many dirs
+clc,close all
+
+new_b = [1 2:2:10];
+
+Ndirs = 30;
+dirs_new_shell = getIsoDirs(Ndirs,'repulsion');
+Ylm=SMI.get_even_SH(dirs_new_shell,Lmax,CS_phase);
+Y00=Ylm(:,1);
+Y2m=Ylm(:,2:6);
+Y4m=Ylm(:,7:15);
+Y6m=Ylm(:,16:28);
+S0_b = []; S2_b = [];
+for kk = 1:length(new_b)
+    U0S0_new_b_flat = Chebyshev_interpolation_U_b(U0S0,new_b(kk)*ones(1,Ndirs),bmax_lib);
+    U2S2_new_b_flat = Chebyshev_interpolation_U_b(U2S2,new_b(kk)*ones(1,Ndirs),bmax_lib);
+    U4S4_new_b_flat = Chebyshev_interpolation_U_b(U4S4,new_b(kk)*ones(1,Ndirs),bmax_lib);
+    U6S6_new_b_flat = Chebyshev_interpolation_U_b(U6S6,new_b(kk)*ones(1,Ndirs),bmax_lib);
+    alpha_nlm_flat_newb = [];
+    
+    for ll=1:Ndirs
+        U0Y0=kron(U0S0_new_b_flat(ll,:),Y00(ll,:));
+        U2Y2=kron(U2S2_new_b_flat(ll,:),Y2m(ll,:));
+        U4Y4=kron(U4S4_new_b_flat(ll,:),Y4m(ll,:));
+        U6Y6=kron(U6S6_new_b_flat(ll,:),Y6m(ll,:));
+        alpha_nlm_flat_newb(ll,:)=[U0Y0 U2Y2 U4Y4 U6Y6];
+    end
+    dwi_newb = alpha_nlm_flat_newb(:,new_nlm) * gamma_hat_flat ; 
+%     gamma_hat_flat = RICEtools.vectorize(gamma_hat_flat,mask);
+%     S0_b = cat(4,S0_b,currentS0);
+
+    % Spherical harmonics fit
+    dwi_newb = RICEtools.vectorize(dwi_newb,mask);
+    [~,Sl,~,table_4D_sorted] = SMI.Fit2D4D_LLS_RealSphHarm_wSorting_norm_varL(dwi_newb,[],ones(1,Ndirs),dirs_new_shell,[],[],4,[]);
+    currentS0=squeeze(Sl(:,:,:,1,:));
+    currentS2=squeeze(Sl(:,:,:,2,:));
+%     S4=squeeze(Sl(:,:,:,3,:));
+    S0_b = cat(4,S0_b,currentS0);
+    S2_b = cat(4,S2_b,currentS2);
+end
+IMGUI(S0_b,[0 5e-2])
+IMGUI(S2_b,[0 1e-2])
+
+%% Display results more nicely
+clc,close all
+allMAPS=cat(4,S0_b,S2_b);
+clims = [ repmat([0 5e-2],length(new_b),1) ; repmat([0 1e-2],length(new_b),1) ];
+allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
+slice=32;
+figure('Position',[4 73 2507 1236]), colormap gray
+nametags = {'$S_{0}(b=1)$','$S_{0}(b=2)$','$S_{0}(b=4)$','$S_{0}(b=6)$','$S_{0}(b=8)$','$S_{0}(b=10)$',...
+            '$S_{2}(b=1)$','$S_{2}(b=2)$','$S_{2}(b=4)$','$S_{2}(b=6)$','$S_{2}(b=8)$','$S_{2}(b=10)$'};
+WrapperPlotManySlices(allMAPS, slice,clims,nametags,2,[],1,0),
+
+
+
+
+
+
+
+
+
+
+
