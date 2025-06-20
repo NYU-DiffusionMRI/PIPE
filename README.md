@@ -47,7 +47,7 @@ A [US and PCT patent application](https://patents.google.com/patent/WO2024073122
 % REFERENCES:
 % - Coelho, S., ..., 2025. ArXiv
 % - Coelho, S., Baete, S., Lemberskiy, G., Ades-Aron, B., Barrol, G., Veraart, J., Novikov, D.S., Fieremans, E., 2022. Reproducibility of the Standard Model of diffusion in white matter on clinical MRI systems. Neuroimage. doi: 10.1016/j.neuroimage.2022.119290. Epub 2022 May 8. PMID: 35545197; PMCID: PMC9248353.
-
+```
 
 [^note]:
     Please cite these works if you use the PIPE toolbox in your publication:
