@@ -53,7 +53,361 @@ classdef PIPE
         end
         end
         % =================================================================
+        function dirs = rand_dirs_S2(Ndirs)
+        % dirs = rand_dirs_S2(Ndirs)
+        %
+        % returns randomly sampled points on the unit sphere in 3D
+        dirs = randn(Ndirs,3);
+        dirs = dirs./repmat(sqrt(sum(dirs.^2,2)),1,3);
+        end
         % =================================================================
+        function [alpha_nlm, gamma_nlm] = compute_alpha_gamma(dwi,target_b,target_dirs,library_path,Nl_fit,mask)
+        % [alpha_nlm, gamma_nlm] = compute_alpha_gamma(dwi,target_b,target_dirs,library_path,Nl_fit,mask)
+        
+        LIB = load(library_path);
+        if max(target_b(:))>100
+            target_b = target_b/1000;
+        end
+        
+        if ~exist('Nl_fit', 'var') || isempty(Nl_fit)
+            Nl_fit = [ LIB.n0 LIB.n2 LIB.n4 LIB.n6 ];
+        end
+        total_nlm_lib = LIB.n0+LIB.n2*5+LIB.n4*9+LIB.n6*13;
+        Nl_lib = [ LIB.n0 LIB.n2 LIB.n4 LIB.n6 ];
+        nlm_fit = PIPE.get_nlm_from_Nl(Nl_fit,Nl_lib);
+
+        if isvector(target_b)
+            b0_ids = target_b<0.1;
+            NB_target = length(target_b);
+        else
+            b_isocenter = squeeze(target_b(end/2,end/2,end/2,:));
+            b0_ids = b_isocenter<0.1;
+            [~,~,~,NB_target] = size(target_b);
+        end
+
+        sz = size(dwi);
+        if length(sz) == 4
+            flag_4D = 1;
+            if ~exist('mask', 'var') || isempty(mask)
+                mask = true(sz(1:3));
+            else
+                mask = logical(mask);
+            end
+            b0 = mean(dwi(:,:,:,b0_ids),4);
+            dwi = RICEtools.vectorize(dwi./b0,mask);
+        else
+            flag_4D = 0;
+            b0 = mean(dwi(b0_ids,:),1);
+            dwi = dwi./b0;
+        end
+        threshold_in_b = LIB.bmax; % Do not interpolate basis functions outside library range
+        CS_phase = LIB.CS_phase;
+        % Interpolating U for new b,beta values
+        if isvector(target_b)
+            alpha_nlm_all = zeros(NB_target,total_nlm_lib);
+            U0_target = PIPE.Chebyshev_interpolation_U_b(LIB.U0(:,1:LIB.n0),target_b,LIB.bmax);
+            U2_target = PIPE.Chebyshev_interpolation_U_b(LIB.U2(:,1:LIB.n2),target_b,LIB.bmax);
+            U4_target = PIPE.Chebyshev_interpolation_U_b(LIB.U4(:,1:LIB.n4),target_b,LIB.bmax);
+            U6_target = PIPE.Chebyshev_interpolation_U_b(LIB.U6(:,1:LIB.n6),target_b,LIB.bmax);
+            Lmax=6;
+            Ylm=SMI.get_even_SH(target_dirs,Lmax,CS_phase);
+            Y00_target=Ylm(:,1);
+            Y2m_target=Ylm(:,2:6);
+            Y4m_target=Ylm(:,7:15);
+            Y6m_target=Ylm(:,16:28);
+            for ii=1:NB_target
+                U0Y0=kron(U0_target(ii,:),Y00_target(ii,:));
+                U2Y2=kron(U2_target(ii,:),Y2m_target(ii,:));
+                U4Y4=kron(U4_target(ii,:),Y4m_target(ii,:));
+                U6Y6=kron(U6_target(ii,:),Y6m_target(ii,:));
+                alpha_nlm_all(ii,:)=[U0Y0 U2Y2 U4Y4 U6Y6];
+            end
+            alpha_nlm = alpha_nlm_all(:,nlm_fit);
+            gamma_nlm = alpha_nlm\(dwi/(4*pi));
+        else
+            bval_masked = PIPE.vectorize(target_b,mask);
+            gx = PIPE.vectorize(target_dirs(:,:,:,:,1),mask);
+            gy = PIPE.vectorize(target_dirs(:,:,:,:,2),mask);
+            gz = PIPE.vectorize(target_dirs(:,:,:,:,3),mask);
+            bvec_masked = permute(cat(3,gx,gy,gz),[1 3 2]);
+            Nvox_mask = size(bval_masked,2);
+            alpha_nlm = zeros(NB_target,length(nlm_fit),Nvox_mask);
+            gamma_nlm = zeros(length(nlm_fit),Nvox_mask);
+            Lmax=6;
+            parfor ii=1:Nvox_mask  %parfor loop takes 4.36s for 1000 vox, for loop takes 19.76
+                current_b = bval_masked(:,ii)';
+                if any(current_b>threshold_in_b)
+                    continue
+                end
+                current_dirs = bvec_masked(:,:,ii);
+                Ylm = SMI.get_even_SH(current_dirs,Lmax,CS_phase);
+                Y00 = Ylm(:,1);
+                Y2m = Ylm(:,2:6);
+                Y4m = Ylm(:,7:15);
+                Y6m = Ylm(:,16:28);
+                U0_target = PIPE.Chebyshev_interpolation_U_b(LIB.U0(:,1:LIB.n0),current_b,LIB.bmax);
+                U2_target = PIPE.Chebyshev_interpolation_U_b(LIB.U2(:,1:LIB.n2),current_b,LIB.bmax);
+                U4_target = PIPE.Chebyshev_interpolation_U_b(LIB.U4(:,1:LIB.n4),current_b,LIB.bmax);
+                U6_target = PIPE.Chebyshev_interpolation_U_b(LIB.U6(:,1:LIB.n6),current_b,LIB.bmax);
+                alpha_nlm_local = zeros(NB_target,total_nlm_lib);
+                for ll=1:NB_target
+                    U0Y0 = kron(U0_target(ll,:),Y00(ll,:));
+                    U2Y2 = kron(U2_target(ll,:),Y2m(ll,:));
+                    U4Y4 = kron(U4_target(ll,:),Y4m(ll,:));
+                    U6Y6 = kron(U6_target(ll,:),Y6m(ll,:));
+                    alpha_nlm_local(ll,:) = [U0Y0 U2Y2 U4Y4 U6Y6];
+                end
+                alpha_nlm(:,:,ii) = alpha_nlm_local(:,nlm_fit);
+                gamma_nlm(:,ii) = alpha_nlm_local(:,nlm_fit)\(dwi(:,ii)/(4*pi));
+            end
+        end
+        if flag_4D
+            gamma_nlm = PIPE.vectorize(gamma_nlm,mask);
+        end
+
+        end
+        % =================================================================
+        function [alpha_nlm] = compute_alpha(target_b,target_dirs,library_path,Nl_fit,mask)
+        % [alpha_nlm] = compute_alpha(target_b,target_dirs,library_path,Nl_fit,mask)
+        
+        LIB = load(library_path);
+        if max(target_b(:))>100
+            target_b = target_b/1000;
+        end
+        if ~exist('mask', 'var') || isempty(mask)
+            mask = true(sz(1:3));
+        else
+            mask = logical(mask);
+        end
+
+        if ~exist('Nl_fit', 'var') || isempty(Nl_fit)
+            Nl_fit = [ LIB.n0 LIB.n2 LIB.n4 LIB.n6 ];
+        end
+        total_nlm_lib = LIB.n0+LIB.n2*5+LIB.n4*9+LIB.n6*13;
+        Nl_lib = [ LIB.n0 LIB.n2 LIB.n4 LIB.n6 ];
+        nlm_fit = PIPE.get_nlm_from_Nl(Nl_fit,Nl_lib);
+
+
+        if isvector(target_b)
+            b0_ids = target_b<0.1;
+            NB_target = length(target_b);
+        else
+            b_isocenter = squeeze(target_b(end/2,end/2,end/2,:));
+            b0_ids = b_isocenter<0.1;
+            [~,~,~,NB_target] = size(target_b);
+        end
+
+        threshold_in_b = LIB.bmax; % Do not interpolate basis functions outside library range
+        CS_phase = LIB.CS_phase;
+        % Interpolating U for new b,beta values
+        if isvector(target_b)
+            alpha_nlm_all = zeros(NB_target,total_nlm_lib);
+            U0_target = PIPE.Chebyshev_interpolation_U_b(LIB.U0(:,1:LIB.n0),target_b,LIB.bmax);
+            U2_target = PIPE.Chebyshev_interpolation_U_b(LIB.U2(:,1:LIB.n2),target_b,LIB.bmax);
+            U4_target = PIPE.Chebyshev_interpolation_U_b(LIB.U4(:,1:LIB.n4),target_b,LIB.bmax);
+            U6_target = PIPE.Chebyshev_interpolation_U_b(LIB.U6(:,1:LIB.n6),target_b,LIB.bmax);
+            Lmax=6;
+            Ylm=SMI.get_even_SH(target_dirs,Lmax,CS_phase);
+            Y00_target=Ylm(:,1);
+            Y2m_target=Ylm(:,2:6);
+            Y4m_target=Ylm(:,7:15);
+            Y6m_target=Ylm(:,16:28);
+            for ii=1:NB_target
+                U0Y0=kron(U0_target(ii,:),Y00_target(ii,:));
+                U2Y2=kron(U2_target(ii,:),Y2m_target(ii,:));
+                U4Y4=kron(U4_target(ii,:),Y4m_target(ii,:));
+                U6Y6=kron(U6_target(ii,:),Y6m_target(ii,:));
+                alpha_nlm_all(ii,:)=[U0Y0 U2Y2 U4Y4 U6Y6];
+            end
+            alpha_nlm = alpha_nlm_all(:,nlm_fit);
+        else
+            bval_masked = PIPE.vectorize(target_b,mask);
+            gx = PIPE.vectorize(target_dirs(:,:,:,:,1),mask);
+            gy = PIPE.vectorize(target_dirs(:,:,:,:,2),mask);
+            gz = PIPE.vectorize(target_dirs(:,:,:,:,3),mask);
+            bvec_masked = permute(cat(3,gx,gy,gz),[1 3 2]);
+            Nvox_mask = size(bval_masked,2);
+            alpha_nlm = zeros(NB_target,length(nlm_fit),Nvox_mask);
+            Lmax=6;
+            parfor ii=1:Nvox_mask  %parfor loop takes 4.36s for 1000 vox, for loop takes 19.76
+                current_b = bval_masked(:,ii)';
+                if any(current_b>threshold_in_b)
+                    continue
+                end
+                current_dirs = bvec_masked(:,:,ii);
+                Ylm = SMI.get_even_SH(current_dirs,Lmax,CS_phase);
+                Y00 = Ylm(:,1);
+                Y2m = Ylm(:,2:6);
+                Y4m = Ylm(:,7:15);
+                Y6m = Ylm(:,16:28);
+                U0_target = PIPE.Chebyshev_interpolation_U_b(LIB.U0(:,1:LIB.n0),current_b,LIB.bmax);
+                U2_target = PIPE.Chebyshev_interpolation_U_b(LIB.U2(:,1:LIB.n2),current_b,LIB.bmax);
+                U4_target = PIPE.Chebyshev_interpolation_U_b(LIB.U4(:,1:LIB.n4),current_b,LIB.bmax);
+                U6_target = PIPE.Chebyshev_interpolation_U_b(LIB.U6(:,1:LIB.n6),current_b,LIB.bmax);
+                alpha_nlm_local = zeros(NB_target,total_nlm_lib);
+                for ll=1:NB_target
+                    U0Y0 = kron(U0_target(ll,:),Y00(ll,:));
+                    U2Y2 = kron(U2_target(ll,:),Y2m(ll,:));
+                    U4Y4 = kron(U4_target(ll,:),Y4m(ll,:));
+                    U6Y6 = kron(U6_target(ll,:),Y6m(ll,:));
+                    alpha_nlm_local(ll,:) = [U0Y0 U2Y2 U4Y4 U6Y6];
+                end
+                alpha_nlm(:,:,ii) = alpha_nlm_local(:,nlm_fit);
+            end
+        end
+        end
+        % =================================================================
+        function kernel = SM_LTE_gamma2kernel(gamma_nlm,target_b,target_dirs,library_path,Nl_gamma,Nl_kernel,mask,sigma,Degree,Mtrain)
+        % kernel = SM_LTE_gamma2kernel(gamma_nlm,target_b,target_dirs,library_path,Nl_gamma,Nl_kernel,mask,sigma,Degree,Mtrain)
+        LIB = load(library_path);
+        sz = size(gamma_nlm);
+        if ~exist('mask', 'var') || isempty(mask)
+            mask = true(sz(1:3));
+        else
+            mask = logical(mask);
+        end
+        if ~exist('Degree', 'var') || isempty(Degree)
+            Degree = 2;
+            fprintf('default polynomial regression  (quadratic)\n')
+        end
+        if ~exist('sigma', 'var') || isempty(sigma)
+            sigma = 1/100;
+            fprintf('default SNR = 100\n')
+        end
+        if ~exist('Mtrain', 'var') || isempty(Mtrain)
+            Mtrain = 40000;
+            fprintf('default training size = 40000\n')
+        end
+
+        alpha_target = PIPE.compute_alpha(target_b,target_dirs,library_path,Nl_gamma,mask);
+
+        nlm_regression = PIPE.get_nlm_from_Nl(Nl_kernel,Nl_gamma);
+
+        % Noise propagation SMI test (not for library, only for SMI regression test)
+        Mtest = 1e3; M = Mtest + Mtrain;
+        lb=[0.2 1 1 0.15 0 50 30 0.1];
+        ub=[0.8 2.5 2.5 0.8 0.2 150 100 0.9];
+        Lmax=6;
+        [f,Da,Depar,Deperp,f_w,T2a,T2e,~,~] = SMI.Get_uniformly_distributed_SM_prior(M,lb,ub,Lmax);
+        f_extra=1-f-f_w;
+        kernel_gt=[f, Da, Depar, Deperp, 1-f-f_extra, T2a,T2e];
+        % Generate fODF
+        Lmax=6;
+        Nfibers=2;%round(rand(M,1))+1;
+        [plm,pl] = rand_REALplm_powerLaw_DNnorm_3Ea_Nfibers(M,Lmax,[],[],Nfibers);
+        plm=plm';
+        
+        % Setting up target protocol
+        NB_target = length(target_b);
+        target_beta = ones(1,NB_target);  % The current library only supports beta = 1
+        
+        % S_target = SMI.SM_wFW_b_beta_TE_RealSphHarm_quadInt(f,Da,Depar,Deperp,f_extra,T2a,T2e,plm,target_b,target_dirs,target_beta,0*target_b,1202,LIB.CS_phase,0,LIB.D_FW);
+        S_target = SMI.SM_wFW_b_beta_TE_RealSphHarm(f,Da,Depar,Deperp,f_extra,T2a,T2e,plm,target_b,target_dirs,target_beta,0*target_b,LIB.CS_phase,LIB.D_FW);
+        S_target_noisy=S_target+randn(NB_target,M)*sigma;
+        
+        id_train = 1:(M-Mtest);
+        id_test = (Mtrain+1):M;
+        
+        GAMMA_hat=alpha_target\(S_target_noisy(:,id_train)/(4*pi));
+        GAMMA_gt=alpha_target\(S_target(:,id_train)/(4*pi));
+
+        GAMMA_hat_test=alpha_target\(S_target_noisy(:,id_test)/(4*pi));
+        GAMMA_gt_test = alpha_target\(S_target(:,id_test)/(4*pi));
+
+
+        options.training_data = GAMMA_hat(nlm_regression,:);   
+        % options.test_data = GAMMA_hat_test(nlm_regression,:);
+        gamma_nlm = PIPE.vectorize(gamma_nlm,mask);
+        options.test_data = gamma_nlm(nlm_regression,:);
+
+        % PR fitting
+        options.training_objective = kernel_gt(1:Mtrain,1:5)';
+        options.Degree = Degree;
+        options.strategy = 'PR';
+        out = PIPE.DataDriven_regression(options);  
+        kernel = PIPE.vectorize(out.fits',mask);
+
+
+
+        % options.test_data = GAMMA_hat_test(nlm_regression,:);
+        % out_test = PIPE.DataDriven_regression(options);  
+        % kernel_test_hat = out_test.fits;
+        % kernel_test_gt = kernel_gt(id_test,:);
+        % param_lims=[0.2 0.8;1 2.5;1 2.5;0 1;0 0.2];
+        % paramNames={'$f$','$D_\mathrm{a}\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\|\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\perp\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$f_\mathrm{w}$'};
+        % figure('Position',[72 742 2137 401])
+        % for ii=1:5
+        %     kernel_target_fit(:,ii) = kernel_test_hat(:,ii);
+        % 
+        %     id_mins=kernel_target_fit(:,ii)<param_lims(ii,1);
+        %     id_maxs=kernel_target_fit(:,ii)>param_lims(ii,2);
+        %     kernel_target_fit(id_mins,ii)=param_lims(ii,1);
+        %     kernel_target_fit(id_maxs,ii)=param_lims(ii,2);
+        % 
+        %     RMSE=sqrt(mean((kernel_test_gt(:,ii)-kernel_target_fit(:,ii)).^2));
+        %     RMSEtag=['RMSE=',num2str(RMSE,3)];
+        %     subplot(1,5,ii), 
+        %     h = scatter_kde(kernel_test_gt(:,ii),kernel_target_fit(:,ii),'filled'); hold on, plot(param_lims(ii,:),param_lims(ii,:),'r-.'), axis([param_lims(ii,:) param_lims(ii,:)])
+        %     title([paramNames{ii},' - ',RMSEtag],'interpreter','latex')
+        %     xlabel('Ground truth','interpreter','latex'), ylabel('NN output','interpreter','latex'), set(gca,'FontSize',20)
+        %     fprintf('================== Done with param %d/5\n',ii)
+        % end
+
+
+
+        end
+        % =================================================================
+        function [S0_b,S2_b] = project_gamma_onto_RotInvs(gamma_nlm,mask,target_b,library_path,Nl_fit)
+        % 
+        LIB = load(library_path);
+        if ~exist('Nl_fit', 'var') || isempty(Nl_fit)
+            Nl_fit = [ LIB.n0 LIB.n2 LIB.n4 LIB.n6 ];
+        end
+        Nl_lib = [ LIB.n0 LIB.n2 LIB.n4 LIB.n6 ];
+        nlm_fit = PIPE.get_nlm_from_Nl(Nl_fit,Nl_lib);
+
+        sz = size(gamma_nlm);
+        if ~exist('mask', 'var') || isempty(mask)
+            mask = true(sz(1:3));
+        else
+            mask = logical(mask);
+        end
+        Lmax = 6;
+        dirs = [-0.130068563916747	0.0932848110280071	0.301874114147997	-0.160588543132534	-0.963953191993350	0.978837928613104	-0.549522980273078	0.592328122242095	-0.729164145170031	0.238633693018993	0.434651955799002	0.652635346397925	-0.734000052801543	-0.403599416152604	0.853698627179037	0.179812898840564	-0.511230028936703	-0.347227091988192	-0.151596735206056	0.719922327180808	-0.822392486806688	0.704707871446281	0.829703699851419	-0.862550086857427	-0.335321484736507	-0.314225258918558	0.194088504613566	0.327542356254105	0.505947381273477	-0.834296964584067	0.309476571411950	-0.117340713967168	-0.363227137830263	0.521389418163999	0.945240558338114	-0.524417749263304	-0.763218546997936	-0.145525976291921	-0.0122722916686933	0.685740007952837	-0.956922291701663	0.484894981408397	-0.223076366317911	-0.0912265656525496	0.939489850665938	-0.548677930291736	0.0899830129379917	-0.529095236280458	0.857923466019652	0.0313910318301205	-0.503828318019078	0.488811191935837	0.294732743377875	-0.956802130789944	0.300000411642112	0.00897408722442505	-0.709091302055868	0.650561378894920	-0.711236989891623	0.789508073435427 ; 0.282325584363997	-0.332500776697028	0.898485458170594	-0.968673668717596	0.261165366605327	-0.200111124452651	0.264272708506881	-0.285537557395265	-0.355775017966924	0.854283276620088	-0.848130577636177	0.307985185967729	-0.537419604056184	0.910143183919012	0.515134135617358	-0.483539314532076	0.478397264082337	-0.766740371788774	0.531267969479908	-0.684110754074832	-0.564282076688453	0.157821133257434	-0.133437282194303	0.257480038001757	-0.543060152023286	0.874112698528370	0.230046094506407	0.475172375772998	-0.530090908461732	0.190037107797886	-0.938443721190627	0.870791399069994	-0.419677486106270	0.848661761051783	0.130543357216993	-0.753119539980642	0.630507380213516	-0.179058930954968	-0.966700744188533	0.632133714249398	-0.162507387356043	-0.696844732289984	0.0147999107837224	0.687075735781306	0.218072671767995	-0.00591585331993446	-0.729496857445582	0.657056695425554	-0.330180891156839	0.998046624894397	-0.857385809697511	-0.101631079322322	0.0246017271241047	-0.166433335585371	0.635666172830116	-0.816956746605835	0.630753698155324	0.578870483786831	-0.154577580948680	-0.533415663960950 ; 0.950460116519448	-0.938478117766921	-0.318741118563859	0.189427145224130	0.0508615270291595	-0.0428000861997289	-0.792580866341241	0.753402746821313	0.584588561288273	0.461794373984095	-0.302906257113693	-0.692251565441700	-0.415239800191922	-0.0935248418712461	0.0763902891366770	0.856654570239605	0.713988736067953	-0.539946801878329	-0.833530308074974	0.117065447446015	0.0725005901498665	0.691721985930035	-0.542020536671319	-0.435558696036320	0.769834510241357	0.370390978466020	-0.953629092875851	0.816656119894876	-0.680456373435304	0.517527267441655	0.153452383184467	-0.477444757172385	-0.831827418398286	0.0890297138886364	0.299129936247056	0.397236683548934	-0.141272407124139	0.973015975958025	-0.255615066149348	-0.360787484264772	-0.240605645609469	0.528473533949100	-0.974688615626135	0.720836074998898	-0.264202820430936	0.836012877586388	-0.678039373753192	-0.536968090245386	0.393634228145500	0.0540142356934065	-0.105102803442199	-0.866449503637717	0.955262982117209	0.238389654393286	-0.711286348620636	0.576629118180567	0.315181372565219	0.491608436960495	-0.685746101467561	-0.303553506686020 ];
+        Ndirs = 60;
+        Ylm=SMI.get_even_SH(dirs,Lmax,LIB.CS_phase);
+        Y00=Ylm(:,1);
+        Y2m=Ylm(:,2:6);
+        Y4m=Ylm(:,7:15);
+        Y6m=Ylm(:,16:28);
+        gamma_nlm = PIPE.vectorize(gamma_nlm,mask);
+        S0_b = []; S2_b = []; %S4_b = [];
+        for kk = 1:length(target_b)
+            U0S0_new_b_flat = PIPE.Chebyshev_interpolation_U_b(LIB.U0(:,1:LIB.n0),target_b(kk)*ones(1,Ndirs),LIB.bmax);
+            U2S2_new_b_flat = PIPE.Chebyshev_interpolation_U_b(LIB.U2(:,1:LIB.n2),target_b(kk)*ones(1,Ndirs),LIB.bmax);
+            U4S4_new_b_flat = PIPE.Chebyshev_interpolation_U_b(LIB.U4(:,1:LIB.n4),target_b(kk)*ones(1,Ndirs),LIB.bmax);
+            U6S6_new_b_flat = PIPE.Chebyshev_interpolation_U_b(LIB.U6(:,1:LIB.n6),target_b(kk)*ones(1,Ndirs),LIB.bmax);
+            alpha_nlm_flat_newb = [];
+            for ll=1:Ndirs
+                US0Y0=kron(U0S0_new_b_flat(ll,:),Y00(ll,:));
+                US2Y2=kron(U2S2_new_b_flat(ll,:),Y2m(ll,:));
+                US4Y4=kron(U4S4_new_b_flat(ll,:),Y4m(ll,:));
+                US6Y6=kron(U6S6_new_b_flat(ll,:),Y6m(ll,:));
+                alpha_nlm_flat_newb(ll,:)=[US0Y0 US2Y2 US4Y4 US6Y6];
+            end
+            dwi_newb = alpha_nlm_flat_newb(:,nlm_fit) * gamma_nlm ; 
+        
+            % Spherical harmonics fit
+            dwi_newb = PIPE.vectorize(dwi_newb,mask);
+            [~,Sl,~,table_4D_sorted] = SMI.Fit2D4D_LLS_RealSphHarm_wSorting_norm_varL(dwi_newb,[],ones(1,Ndirs),dirs,[],[],4,[]);
+            currentS0 = squeeze(Sl(:,:,:,1,:));
+            currentS2 = squeeze(Sl(:,:,:,2,:));
+        %     S4=squeeze(Sl(:,:,:,3,:));
+            S0_b = cat(4,S0_b,currentS0);
+            S2_b = cat(4,S2_b,currentS2);
+        end
+        
+        end
         % =================================================================
         function U_target = Chebyshev_interpolation_U_b(U,b_target,bmax)
         % U_target = Chebyshev_interpolation_U_b(U,b_target,bmax)
@@ -296,6 +650,17 @@ classdef PIPE
                 end
             end
         end        
+        % =================================================================
+        function ids_nlm = get_nlm_from_Nl(Nl_fit,Nl_lib)
+        % ids_nlm = get_nlm_from_Nl(Nl_fit,Nl_lib)
+        %
+        ell = 0:2:6;
+        elems_per_sector = (2*ell+1).*Nl_lib;
+        ids_nlm = [ 1:Nl_fit(1),...
+                    (elems_per_sector(1) + 1):(elems_per_sector(1) + Nl_fit(2)*5 ),...
+                    (elems_per_sector(2) + 1):(elems_per_sector(2) + Nl_fit(3)*9 ),...
+                                        (elems_per_sector(3) + 1):(elems_per_sector(3) + Nl_fit(4)*13 )];
+        end
         % =================================================================
         function [s, mask] = vectorize(S, mask)
             if nargin == 1

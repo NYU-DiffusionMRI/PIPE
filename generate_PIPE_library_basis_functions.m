@@ -15,7 +15,8 @@ Lmax=6;
 f_extra=1-f-f_w;
 kernel=[f, Da, Depar, Deperp, 1-f-f_extra, T2a,T2e];
 
-bmax=10; nametag='25_06_20_largesvd_LTE_b10k_GitHub_v0.mat'; % broad range for library
+% bmax=10; nametag='25_06_20_largesvd_LTE_b10k_GitHub_v0.mat'; % broad range for library
+bmax=15; nametag='25_06_20_largesvd_LTE_b15k_GitHub_v0.mat'; % broad range for library
 
 b = PIPE.get_Chebyshev_nodes(N_b,[0 bmax]);
 NB=N_b;
