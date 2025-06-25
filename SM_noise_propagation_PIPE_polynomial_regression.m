@@ -1,7 +1,6 @@
 %% Run SM noise propagation using basis functions from library
 clc,clear,close all
 root = '/Users/coelhs01/Documents/SantiagoCoelho/Git/PIPE';
-% nametag='25_06_20_largesvd_LTE_b10k_GitHub_v0.mat'; % broad range for library
 nametag='25_06_20_largesvd_LTE_b15k_GitHub_v0.mat'; % broad range for library
 library_path = fullfile(root,nametag);
 LIB = load(library_path);
@@ -13,6 +12,8 @@ flag_random_b = 1; % Random b-values
 M = 5e3;
 lb=[0.2 1 1 0.15 0 50 30 0.1];
 ub=[0.8 2.5 2.5 0.8 0.2 150 100 0.9];
+% MLTraining.KernelBounds = [0.05, 1, 1, 0.1, 0, 50, 50 ; 0.95, 3, 3, 1.2, 0.5, 150, 120 ];
+MLTraining.KernelBounds = [ lb ; ub ];
 Lmax=6;
 [f,Da,Depar,Deperp,f_w,T2a,T2e,~,~] = SMI.Get_uniformly_distributed_SM_prior(M,lb,ub,Lmax);
 f_extra=1-f-f_w;
@@ -27,10 +28,10 @@ plm=plm';
 NB_target = 200; bmax = 8;
 
 if flag_random_b
-    % Random b-values
-    b_target=[0 rand(1,NB_target-1)*bmax];
+    % Random b-values (a b=0 needs to be included)
+    b_target=[0 (rand(1,NB_target-1)*bmax-0.1)+0.1];
 else
-    % Shelled protocol
+    % Shelled protocol (a b=0 needs to be included)
     b_target=[0 ones(1,30) 2*ones(1,30) 3*ones(1,34) 4*ones(1,45) 8*ones(1,60)];
 end
 
@@ -53,28 +54,37 @@ subplot(121), set(gca,'FontSize',25), ylabel('b-value [$\mathrm{ms}/\mu\mathrm{m
 subplot(122), set(gca,'FontSize',25), axis equal, axis off, campos([4.1104  -16.7049    1.7235])
 
 tic
-% S_target = SMI.SM_wFW_b_beta_TE_RealSphHarm_quadInt(f,Da,Depar,Deperp,f_extra,T2a,T2e,plm,b_target,dirs_target,beta_target,0*b_target,1202,LIB.CS_phase);
 S_target = SMI.SM_wFW_b_beta_TE_RealSphHarm(f,Da,Depar,Deperp,f_extra,T2a,T2e,plm,b_target,dirs_target,beta_target,0*b_target,LIB.CS_phase,LIB.D_FW);
 t=toc; fprintf('Generating forward SM signals in %f s\n',t)
 
-Nl_gamma_fit = [5 4 2 0]; mask = [];
+Nl_gamma_fit = [6 5 3 2];
+mask = true([10 10 M/100]);
 % Add random noise
 SNR_dwi = 100;
-dwi_synthetic = permute(reshape(S_target+randn(NB_target,M)/SNR_dwi, [NB_target 10 10 M/100]),[2 3 4 1]);
+
+dwi = PIPE.vectorize(S_target,mask);
+dwi_synthetic = PIPE.vectorize(S_target+randn(NB_target,M)/SNR_dwi,mask);
 
 tic
-[~, gamma_hat] = PIPE.compute_alpha_gamma(dwi_synthetic,b_target,dirs_target,library_path,Nl_gamma_fit,mask);
+[alpha_nlm, gamma_hat] = PIPE.compute_alpha_gamma(dwi_synthetic,b_target,dirs_target,library_path,Nl_gamma_fit,mask);
+[~, gamma_gt] = PIPE.compute_alpha_gamma(dwi,b_target,dirs_target,library_path,Nl_gamma_fit,mask);
 t=toc; fprintf('Computing alpha(b,g) and gamma(kernel,plm) in %f s\n',t)
 
-% Estimate SM kernel parameters
-Nl_kernel = Nl_gamma_fit;
-sigma_dwi_norm = 1/SNR_dwi; PRdegree = 3;
+S_hat = alpha_nlm * PIPE.vectorize(gamma_hat,mask);
+S_target2 = alpha_nlm * PIPE.vectorize(gamma_gt,mask);
+figure,
+subplot(121), plot(S_target(:),S_target2(:),'.',[0 1],[0 1],'r-.')
+subplot(122), plot(S_target(:),S_hat(:),'.',[0 1],[0 1],'r-.')
+ 
+% Estimate SM kernel parameters; it is good to not use all basis functions (smaller ones have too low SNR)
+Nl_kernel = [5 4 0 0];
+sigma_dwi_norm = 1/SNR_dwi; MLTraining.Degree = 3; MLTraining.Mtrain = 3e4;
 % Use isocenter protocol for gamma noise propagation
 tic
-kernel_fit = PIPE.SM_LTE_gamma2kernel(gamma_hat,b_target,dirs_target,library_path,Nl_gamma_fit,Nl_kernel,mask,sigma_dwi_norm,PRdegree);
+kernel_fit = PIPE.SM_LTE_gamma2kernel(gamma_hat,b_target,dirs_target,library_path,Nl_gamma_fit,Nl_kernel,mask,sigma_dwi_norm,MLTraining);
 t=toc; fprintf('Computing Standard Model parameters from gamma_nlm in %f s\n',t)
 
-kernel_hat = reshape(kernel_fit, [M 5]);
+kernel_hat = PIPE.vectorize(kernel_fit, mask)';
 kernel_gt = kernel(:,1:5);
 param_lims=[0.2 0.8;1 2.5;1 2.5;0 1;0 0.2];
 paramNames={'$f$','$D_\mathrm{a}\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\|\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\perp\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$f_\mathrm{w}$'};
@@ -85,7 +95,6 @@ for ii=1:5
     id_maxs=kernel_target_fit>param_lims(ii,2);
     kernel_target_fit(id_mins)=param_lims(ii,1);
     kernel_target_fit(id_maxs)=param_lims(ii,2);
-
     RMSE=sqrt(mean((kernel_gt(:,ii)-kernel_target_fit).^2));
     RMSEtag=['RMSE=',num2str(RMSE,3)];
     subplot(1,5,ii), 

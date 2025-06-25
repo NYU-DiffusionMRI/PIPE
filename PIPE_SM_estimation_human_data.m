@@ -32,10 +32,17 @@ t=toc; fprintf('Computing signal rotational invariants in %f s\n',t)
 
 % Estimate SM kernel parameters
 Nl_kernel = Nl_gamma_fit;
-sigma_dwi_norm = 1/50; PRdegree = 3;
+sigma_dwi_norm = 1/50;
+MLTraining.Degree = 3;
+MLTraining.Mtrain = 3e4;
+lb=[0.2 1 1 0.15 0 50 30 0.1];
+ub=[0.8 2.5 2.5 0.8 0.2 150 100 0.9];
+MLTraining.KernelBounds = [ lb ; ub ];
+% MLTraining.KernelBounds = [0.05, 1, 1, 0.1, 0, 50, 50 ; 0.95, 3, 3, 1.2, 0.5, 150, 120 ];
+
 % Use isocenter protocol for gamma noise propagation
 tic
-kernel_fit = PIPE.SM_LTE_gamma2kernel(gamma_hat,nominal_protocol.b,nominal_protocol.g,library_path,Nl_gamma_fit,Nl_kernel,mask,sigma_dwi_norm,PRdegree);
+kernel_fit = PIPE.SM_LTE_gamma2kernel(gamma_hat,nominal_protocol.b,nominal_protocol.g,library_path,Nl_gamma_fit,Nl_kernel,mask,sigma_dwi_norm,MLTraining);
 t=toc; fprintf('Computing Standard Model parameters from gamma_nlm in %f s\n',t)
 
 
@@ -46,7 +53,7 @@ clc,close all
 % plot gamma00
 allMAPS = gamma_hat(:,:,:,1:4);
 slice=34;
-clims = [-3.5   -2.5 ; -0.75    0.5 ;  -0.25    0.25 ; -0.1    0.1];
+clims = [-3.5   -2.5 ; -0.75    0.5 ;  -0.25    0.25 ; -0.1    0.1]*4*pi;
 allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
 figure('Position',[2606 799 1772 374]), colormap gray
 nametags={'$\hat{\gamma}_{n=1,\ell=0,m=0}$','$\hat{\gamma}_{n=2,\ell=0,m=0}$','$\hat{\gamma}_{n=3,\ell=0,m=0}$','$\hat{\gamma}_{n=4,\ell=0,m=0}$'};
@@ -54,18 +61,17 @@ PIPE.plotSlices(allMAPS, slice,clims,nametags,1,[],1,0),
 
 % plot gamma2m
 allMAPS = gamma_hat(:,:,:,[ 5:9 10:14 15:19]);
-slice=34; clims = repelem([ -0.4    0.4 ; -0.06    0.06 ; -0.02    0.02 ],5,1);
+slice=34; clims = repelem([ -0.4    0.4 ; -0.06    0.06 ; -0.02    0.02 ]*(4*pi),5,1);
 allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
 figure('Position',[93 32 2151 1305]), colormap gray
 nametags = {'$\hat{\gamma}_{n=1,\ell=2,m=-2}$','$\hat{\gamma}_{n=1,\ell=2,m=-1}$','$\hat{\gamma}_{n=1,\ell=2,m=0}$','$\hat{\gamma}_{n=1,\ell=2,m=1}$','$\hat{\gamma}_{n=1,\ell=2,m=2}$',...
             '$\hat{\gamma}_{n=2,\ell=2,m=-2}$','$\hat{\gamma}_{n=2,\ell=2,m=-1}$','$\hat{\gamma}_{n=2,\ell=2,m=0}$','$\hat{\gamma}_{n=2,\ell=2,m=1}$','$\hat{\gamma}_{n=2,\ell=2,m=2}$',...
             '$\hat{\gamma}_{n=3,\ell=2,m=-2}$','$\hat{\gamma}_{n=3,\ell=2,m=-1}$','$\hat{\gamma}_{n=3,\ell=2,m=0}$','$\hat{\gamma}_{n=3,\ell=2,m=1}$','$\hat{\gamma}_{n=3,\ell=2,m=2}$'};
 PIPE.plotSlices(allMAPS, slice,clims,nametags,3,[],1,1),
-% colormap(cbrewer2('iRdBu', 256));
 
 % Plot signal rotational invariants
 allMAPS=cat(4,S0_b,S2_b);
-clims = [ repmat([0 5e-2],length(new_b),1) ; repmat([0 1e-2],length(new_b),1) ];
+clims = [ repmat([0 0.5],length(new_b),1) ; repmat([0 0.1],length(new_b),1) ];
 allMAPS=flip(permute(allMAPS,[2 1 3 4]),1);
 slice=32;
 figure('Position',[2678 677 1603 607]), colormap gray

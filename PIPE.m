@@ -77,29 +77,23 @@ classdef PIPE
         nlm_fit = PIPE.get_nlm_from_Nl(Nl_fit,Nl_lib);
 
         if isvector(target_b)
-            b0_ids = target_b<0.1;
+            b0_ids = target_b<1e-3;
             NB_target = length(target_b);
         else
             b_isocenter = squeeze(target_b(end/2,end/2,end/2,:));
-            b0_ids = b_isocenter<0.1;
+            b0_ids = b_isocenter<1e-3;
             [~,~,~,NB_target] = size(target_b);
         end
 
         sz = size(dwi);
-        if length(sz) == 4
-            flag_4D = 1;
-            if ~exist('mask', 'var') || isempty(mask)
-                mask = true(sz(1:3));
-            else
-                mask = logical(mask);
-            end
-            b0 = mean(dwi(:,:,:,b0_ids),4);
-            dwi = RICEtools.vectorize(dwi./b0,mask);
+        if ~exist('mask', 'var') || isempty(mask)
+            mask = true(sz(1:3));
         else
-            flag_4D = 0;
-            b0 = mean(dwi(b0_ids,:),1);
-            dwi = dwi./b0;
+            mask = logical(mask);
         end
+        b0 = mean(dwi(:,:,:,b0_ids),4);
+        dwi = RICEtools.vectorize(dwi./b0,mask);
+
         threshold_in_b = LIB.bmax; % Do not interpolate basis functions outside library range
         CS_phase = LIB.CS_phase;
         % Interpolating U for new b,beta values
@@ -123,7 +117,8 @@ classdef PIPE
                 alpha_nlm_all(ii,:)=[U0Y0 U2Y2 U4Y4 U6Y6];
             end
             alpha_nlm = alpha_nlm_all(:,nlm_fit);
-            gamma_nlm = alpha_nlm\(dwi/(4*pi));
+            % gamma_nlm = alpha_nlm\(dwi/(4*pi));
+            gamma_nlm = alpha_nlm\dwi;
         else
             bval_masked = PIPE.vectorize(target_b,mask);
             gx = PIPE.vectorize(target_dirs(:,:,:,:,1),mask);
@@ -158,12 +153,11 @@ classdef PIPE
                     alpha_nlm_local(ll,:) = [U0Y0 U2Y2 U4Y4 U6Y6];
                 end
                 alpha_nlm(:,:,ii) = alpha_nlm_local(:,nlm_fit);
-                gamma_nlm(:,ii) = alpha_nlm_local(:,nlm_fit)\(dwi(:,ii)/(4*pi));
+                % gamma_nlm(:,ii) = alpha_nlm_local(:,nlm_fit)\(dwi(:,ii)/(4*pi));
+                gamma_nlm(:,ii) = alpha_nlm_local(:,nlm_fit)\dwi(:,ii);
             end
         end
-        if flag_4D
-            gamma_nlm = PIPE.vectorize(gamma_nlm,mask);
-        end
+        gamma_nlm = PIPE.vectorize(gamma_nlm,mask);
 
         end
         % =================================================================
@@ -174,11 +168,7 @@ classdef PIPE
         if max(target_b(:))>100
             target_b = target_b/1000;
         end
-        if ~exist('mask', 'var') || isempty(mask)
-            mask = true(sz(1:3));
-        else
-            mask = logical(mask);
-        end
+
 
         if ~exist('Nl_fit', 'var') || isempty(Nl_fit)
             Nl_fit = [ LIB.n0 LIB.n2 LIB.n4 LIB.n6 ];
@@ -195,6 +185,12 @@ classdef PIPE
             b_isocenter = squeeze(target_b(end/2,end/2,end/2,:));
             b0_ids = b_isocenter<0.1;
             [~,~,~,NB_target] = size(target_b);
+            sz = size(target_b);
+            if ~exist('mask', 'var') || isempty(mask)
+                mask = true(sz(1:3));
+            else
+                mask = logical(mask);
+            end
         end
 
         threshold_in_b = LIB.bmax; % Do not interpolate basis functions outside library range
@@ -257,8 +253,8 @@ classdef PIPE
         end
         end
         % =================================================================
-        function kernel = SM_LTE_gamma2kernel(gamma_nlm,target_b,target_dirs,library_path,Nl_gamma,Nl_kernel,mask,sigma,Degree,Mtrain)
-        % kernel = SM_LTE_gamma2kernel(gamma_nlm,target_b,target_dirs,library_path,Nl_gamma,Nl_kernel,mask,sigma,Degree,Mtrain)
+        function kernel = SM_LTE_gamma2kernel(gamma_nlm,target_b,target_dirs,library_path,Nl_gamma,Nl_kernel,mask,sigma,MLTraining)
+        % kernel = SM_LTE_gamma2kernel(gamma_nlm,target_b,target_dirs,library_path,Nl_gamma,Nl_kernel,mask,sigma,MLTraining)
         LIB = load(library_path);
         sz = size(gamma_nlm);
         if ~exist('mask', 'var') || isempty(mask)
@@ -266,33 +262,40 @@ classdef PIPE
         else
             mask = logical(mask);
         end
-        if ~exist('Degree', 'var') || isempty(Degree)
-            Degree = 2;
-            fprintf('default polynomial regression  (quadratic)\n')
-        end
         if ~exist('sigma', 'var') || isempty(sigma)
             sigma = 1/100;
             fprintf('default SNR = 100\n')
         end
-        if ~exist('Mtrain', 'var') || isempty(Mtrain)
-            Mtrain = 40000;
-            fprintf('default training size = 40000\n')
+
+        if ~isfield(MLTraining,'Degree')
+            Degree = 2; fprintf('default quadratic regression\n')
+        else
+            Degree = MLTraining.Degree;
+        end
+        if ~isfield(MLTraining,'Mtrain')
+            Mtrain = 40000; fprintf('default training size = 40000\n')
+        else
+            Mtrain = MLTraining.Mtrain;
+        end
+        if ~isfield(MLTraining,'KernelBounds')
+            lb=[0.2 1 1 0.15 0 50 30 0.1]; ub=[0.8 2.5 2.5 0.8 0.2 150 100 0.9];
+            lb=[0.2 1 1 0.15 0 50 30 0.1]; ub=[0.8 2.5 2.5 0.8 0.2 150 100 0.9];
+        else
+            lb = MLTraining.KernelBounds(1,:);
+            ub = MLTraining.KernelBounds(2,:);
         end
 
         alpha_target = PIPE.compute_alpha(target_b,target_dirs,library_path,Nl_gamma,mask);
-
         nlm_regression = PIPE.get_nlm_from_Nl(Nl_kernel,Nl_gamma);
 
         % Noise propagation SMI test (not for library, only for SMI regression test)
-        Mtest = 1e3; M = Mtest + Mtrain;
-        lb=[0.2 1 1 0.15 0 50 30 0.1];
-        ub=[0.8 2.5 2.5 0.8 0.2 150 100 0.9];
-        Lmax=6;
+        Mtest = 5e3; M = Mtest + Mtrain;
+        Lmax = 6;
         [f,Da,Depar,Deperp,f_w,T2a,T2e,~,~] = SMI.Get_uniformly_distributed_SM_prior(M,lb,ub,Lmax);
         f_extra=1-f-f_w;
-        kernel_gt=[f, Da, Depar, Deperp, 1-f-f_extra, T2a,T2e];
+        kernel_gt=[f, Da, Depar, Deperp, f_w, T2a,T2e];
         % Generate fODF
-        Lmax=6;
+        Lmax = 6;
         Nfibers=2;%round(rand(M,1))+1;
         [plm,pl] = rand_REALplm_powerLaw_DNnorm_3Ea_Nfibers(M,Lmax,[],[],Nfibers);
         plm=plm';
@@ -303,58 +306,46 @@ classdef PIPE
         
         % S_target = SMI.SM_wFW_b_beta_TE_RealSphHarm_quadInt(f,Da,Depar,Deperp,f_extra,T2a,T2e,plm,target_b,target_dirs,target_beta,0*target_b,1202,LIB.CS_phase,0,LIB.D_FW);
         S_target = SMI.SM_wFW_b_beta_TE_RealSphHarm(f,Da,Depar,Deperp,f_extra,T2a,T2e,plm,target_b,target_dirs,target_beta,0*target_b,LIB.CS_phase,LIB.D_FW);
-        S_target_noisy=S_target+randn(NB_target,M)*sigma;
+        mask_train = true([10 10 M/100]);
+        S_target_noisy = PIPE.vectorize(S_target+randn(NB_target,M)*sigma,mask_train);
         
-        id_train = 1:(M-Mtest);
-        id_test = (Mtrain+1):M;
-        
-        GAMMA_hat=alpha_target\(S_target_noisy(:,id_train)/(4*pi));
-        GAMMA_gt=alpha_target\(S_target(:,id_train)/(4*pi));
-
-        GAMMA_hat_test=alpha_target\(S_target_noisy(:,id_test)/(4*pi));
-        GAMMA_gt_test = alpha_target\(S_target(:,id_test)/(4*pi));
-
-
-        options.training_data = GAMMA_hat(nlm_regression,:);   
-        % options.test_data = GAMMA_hat_test(nlm_regression,:);
+        id_train = 1:Mtrain;
+        [alpha_target, GAMMA_hat] = PIPE.compute_alpha_gamma(S_target_noisy,target_b,target_dirs,library_path,Nl_gamma,mask_train);
+        GAMMA_hat = PIPE.vectorize(GAMMA_hat,mask_train);
+        options.training_data = GAMMA_hat(nlm_regression,id_train);   
         gamma_nlm = PIPE.vectorize(gamma_nlm,mask);
         options.test_data = gamma_nlm(nlm_regression,:);
 
         % PR fitting
-        options.training_objective = kernel_gt(1:Mtrain,1:5)';
+        options.training_objective = kernel_gt(id_train,1:5)';
         options.Degree = Degree;
         options.strategy = 'PR';
         out = PIPE.DataDriven_regression(options);  
         kernel = PIPE.vectorize(out.fits',mask);
 
-
-
-        % options.test_data = GAMMA_hat_test(nlm_regression,:);
-        % out_test = PIPE.DataDriven_regression(options);  
-        % kernel_test_hat = out_test.fits;
-        % kernel_test_gt = kernel_gt(id_test,:);
-        % param_lims=[0.2 0.8;1 2.5;1 2.5;0 1;0 0.2];
-        % paramNames={'$f$','$D_\mathrm{a}\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\|\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\perp\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$f_\mathrm{w}$'};
-        % figure('Position',[72 742 2137 401])
-        % for ii=1:5
-        %     kernel_target_fit(:,ii) = kernel_test_hat(:,ii);
-        % 
-        %     id_mins=kernel_target_fit(:,ii)<param_lims(ii,1);
-        %     id_maxs=kernel_target_fit(:,ii)>param_lims(ii,2);
-        %     kernel_target_fit(id_mins,ii)=param_lims(ii,1);
-        %     kernel_target_fit(id_maxs,ii)=param_lims(ii,2);
-        % 
-        %     RMSE=sqrt(mean((kernel_test_gt(:,ii)-kernel_target_fit(:,ii)).^2));
-        %     RMSEtag=['RMSE=',num2str(RMSE,3)];
-        %     subplot(1,5,ii), 
-        %     h = scatter_kde(kernel_test_gt(:,ii),kernel_target_fit(:,ii),'filled'); hold on, plot(param_lims(ii,:),param_lims(ii,:),'r-.'), axis([param_lims(ii,:) param_lims(ii,:)])
-        %     title([paramNames{ii},' - ',RMSEtag],'interpreter','latex')
-        %     xlabel('Ground truth','interpreter','latex'), ylabel('NN output','interpreter','latex'), set(gca,'FontSize',20)
-        %     fprintf('================== Done with param %d/5\n',ii)
-        % end
-
-
-
+        % % % % Testing local function
+        % % % id_test = (Mtrain+1):M;
+        % % % options.test_data = GAMMA_hat(nlm_regression,id_test);
+        % % % out_test = PIPE.DataDriven_regression(options);  
+        % % % kernel_test_hat = out_test.fits;
+        % % % kernel_test_gt = kernel_gt(id_test,:);
+        % % % param_lims=[0.2 0.8;1 2.5;1 2.5;0 1;0 0.2];
+        % % % paramNames={'$f$','$D_\mathrm{a}\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\|\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$D_\mathrm{e}^\perp\,[\mathrm{\mu m}^2/\mathrm{ms}]$','$f_\mathrm{w}$'};
+        % % % figure('Position',[72 742 2137 401])
+        % % % for ii=1:5
+        % % %     kernel_target_fit(:,ii) = kernel_test_hat(:,ii);
+        % % %     id_mins=kernel_target_fit(:,ii)<param_lims(ii,1);
+        % % %     id_maxs=kernel_target_fit(:,ii)>param_lims(ii,2);
+        % % %     kernel_target_fit(id_mins,ii)=param_lims(ii,1);
+        % % %     kernel_target_fit(id_maxs,ii)=param_lims(ii,2);
+        % % %     RMSE=sqrt(mean((kernel_test_gt(:,ii)-kernel_target_fit(:,ii)).^2));
+        % % %     RMSEtag=['RMSE=',num2str(RMSE,3)];
+        % % %     subplot(1,5,ii), 
+        % % %     h = scatter_kde(kernel_test_gt(:,ii),kernel_target_fit(:,ii),'filled'); hold on, plot(param_lims(ii,:),param_lims(ii,:),'r-.'), axis([param_lims(ii,:) param_lims(ii,:)])
+        % % %     title([paramNames{ii},' - ',RMSEtag],'interpreter','latex')
+        % % %     xlabel('Ground truth','interpreter','latex'), ylabel('NN output','interpreter','latex'), set(gca,'FontSize',20)
+        % % %     fprintf('================== Done with param %d/5\n',ii)
+        % % % end
         end
         % =================================================================
         function [S0_b,S2_b] = project_gamma_onto_RotInvs(gamma_nlm,mask,target_b,library_path,Nl_fit)
@@ -655,11 +646,16 @@ classdef PIPE
         % ids_nlm = get_nlm_from_Nl(Nl_fit,Nl_lib)
         %
         ell = 0:2:6;
-        elems_per_sector = (2*ell+1).*Nl_lib;
+        elems_per_sector = cumsum((2*ell+1).*Nl_lib);
         ids_nlm = [ 1:Nl_fit(1),...
                     (elems_per_sector(1) + 1):(elems_per_sector(1) + Nl_fit(2)*5 ),...
                     (elems_per_sector(2) + 1):(elems_per_sector(2) + Nl_fit(3)*9 ),...
-                                        (elems_per_sector(3) + 1):(elems_per_sector(3) + Nl_fit(4)*13 )];
+                    (elems_per_sector(3) + 1):(elems_per_sector(3) + Nl_fit(4)*13 )];
+        % elems_per_sector = (2*ell+1).*Nl_lib;
+        % ids_nlm = [ 1:Nl_fit(1),...
+        %             (elems_per_sector(1) + 1):(elems_per_sector(1) + Nl_fit(2)*5 ),...
+        %             (elems_per_sector(2) + 1):(elems_per_sector(2) + Nl_fit(3)*9 ),...
+        %                                 (elems_per_sector(3) + 1):(elems_per_sector(3) + Nl_fit(4)*13 )];
         end
         % =================================================================
         function [s, mask] = vectorize(S, mask)
