@@ -297,7 +297,7 @@ classdef PIPE
         % Generate fODF
         Lmax = 6;
         Nfibers=2;%round(rand(M,1))+1;
-        [plm,pl] = rand_REALplm_powerLaw_DNnorm_3Ea_Nfibers(M,Lmax,[],[],Nfibers);
+        [plm,pl] = PIPE.rand_REALplm_powerLaw_DNnorm_3Ea_Nfibers(M,Lmax,[],[],Nfibers);
         plm=plm';
         
         % Setting up target protocol
@@ -447,8 +447,9 @@ classdef PIPE
                 if n_index(jj) == 1
                     gamma_1lm = gamma(ids,:);
                     gamma_ratios_aux = sqrt(sum(gamma_1lm.^2,1));
+                    current_ri = gamma_ratios_aux;
                 else
-                    gamma_ratios_aux = gamma(ids,:)./gamma_1lm;
+                    gamma_ratios_aux = (gamma(ids,:) ./ gamma_1lm ) .* current_ri;
                 end
             end
             gamma_ratios_average(jj,:)=mean(gamma_ratios_aux,1);
@@ -677,6 +678,179 @@ classdef PIPE
                    s(i, :) = Si(mask(:));
                 end
             end
+        end
+        % =================================================================
+        function [plm,pl] = rand_REALplm_powerLaw_DNnorm_3Ea_Nfibers(M,Lmax,bounds_p2,bounds_lambda,N)
+        %
+        % [plm,pl] = rand_REALplm_powerLaw_DNnorm_3Ea_Nfibers(M,Lmax,bounds_p2,bounds_lambda,N)
+        %
+        % Output: plm is [Nplm x M] where M is the number of samples (input)
+        %         and Nplm = Lmax*(Lmax+3)/2 is the number of plm coefficients
+        %
+        % By: Santiago Coelho (2021/10/06)
+        if ~exist('Lmax', 'var') || isempty(Lmax)
+            Lmax=2;
+        end
+        if ~exist('bounds_p2', 'var') || isempty(bounds_p2)
+            bounds_p2=[0.02 0.9];
+        end
+        if ~exist('bounds_lambda', 'var') || isempty(bounds_lambda)
+            bounds_lambda=[0.5 0.9];
+        end
+        if ~exist('N', 'var') || isempty(N)
+            N=1;
+        end
+        if N>3, error('N can only be 1, 2, or 3'), end
+        if N==1
+            [plm,pl] = PIPE.rand_REALplm_powerLaw_DNnorm_3Ea_helper(M,Lmax,bounds_p2,bounds_lambda);
+        elseif N==2
+            f=rand(1,M)*0.7+0.15;
+            [plm1,~] = PIPE.rand_REALplm_powerLaw_DNnorm_3Ea_helper(M,Lmax,bounds_p2,bounds_lambda);
+            [plm2,~] = PIPE.rand_REALplm_powerLaw_DNnorm_3Ea_helper(M,Lmax,bounds_p2,bounds_lambda);
+            plm=plm1.*f+plm2.*(1-f);
+        elseif N==3
+            f1_sq=rand(1,M)*0.7+0.15;
+            f2_sq=rand(1,M)*0.7+0.15;
+            [f1,f2] = PIPE.From_unit_square_to_unit_triangle(f1_sq,f2_sq);
+            [plm1,~] = PIPE.rand_REALplm_powerLaw_DNnorm_3Ea_helper(M,Lmax,bounds_p2,bounds_lambda);
+            [plm2,~] = PIPE.rand_REALplm_powerLaw_DNnorm_3Ea_helper(M,Lmax,bounds_p2,bounds_lambda);
+            [plm3,~] = PIPE.rand_REALplm_powerLaw_DNnorm_3Ea_helper(M,Lmax,bounds_p2,bounds_lambda);
+            plm=plm1.*f1+plm2.*f2+plm3.*(1-f1-f2);
+        end
+        p2=sqrt(sum(plm(1:5,:).^2,1));
+        pl=p2';
+        if Lmax>=4
+            p4=sqrt(sum(plm(6:14,:).^2,1));
+            pl=[p2;p4]';
+        end
+        if Lmax>=6
+            p6=sqrt(sum(plm(15:27,:).^2,1));
+            pl=[p2;p4;p6]';
+        end
+        if Lmax>=8
+            p8=sqrt(sum(plm(28:44,:).^2,1));
+            pl=[p2;p4;p6;p8]';
+        end
+        if Lmax>=10
+            p10=sqrt(sum(plm(45:65,:).^2,1));
+            pl=[p2;p4;p6;p8;p10]';
+        end
+        end
+        % =================================================================
+        function [plm,pl] = rand_REALplm_powerLaw_DNnorm_3Ea_helper(M,Lmax,bounds_p2,bounds_lambda)
+        %
+        % plm = rand_REALplm_powerLaw_DNnorm_3Ea(M,Lmax,bounds_p2,bounds_lambda)
+        %
+        % Output: plm is [Nplm x M] where M is the number of samples (input)
+        %         and Nplm = Lmax*(Lmax+3)/2 is the number of plm coefficients
+        %
+        % By: Santiago Coelho (2021/04/27)
+        if ~exist('Lmax', 'var') || isempty(Lmax)
+            Lmax=2;
+        end
+        if ~exist('bounds_p2', 'var') || isempty(bounds_p2)
+            bounds_p2=[0.02 0.9];
+        end
+        if ~exist('bounds_lambda', 'var') || isempty(bounds_lambda)
+            bounds_lambda=[0.5 0.9];
+        end
+        l=4:2:10;
+        p2=rand(M,1)*(bounds_p2(2)-bounds_p2(1))+bounds_p2(1);
+        if any(~isfinite(bounds_lambda))
+            % This is too much
+        %     p4=p2.*10.^(rand(M,1)*-1);
+        %     p6=p4.*10.^(rand(M,1)*-1);
+        %     p8=p6.*10.^(rand(M,1)*-1);
+        %     p10=p8.*10.^(rand(M,1)*-1);
+        %     pl=[ones(M,1) p2 p4 p6 p8 p10];
+            
+            % This perturbation from the exponential is better (plus combined with N>1)
+            bounds_lambda=[0.5 0.9];
+            lambda=rand(M,1)*(bounds_lambda(2)-bounds_lambda(1))+bounds_lambda(1);
+            C=p2./lambda.^2;
+            pl=[ones(M,1) p2 C.*lambda.^l];
+            pert=[ones(M,1) rand(M,5)*0.2+0.9];
+            pl=pert.*pl;
+        else
+            lambda=rand(M,1)*(bounds_lambda(2)-bounds_lambda(1))+bounds_lambda(1);
+            C=p2./lambda.^2;
+            pl=[ones(M,1) p2 C.*lambda.^l];
+        end
+        p2m=[zeros(M,2) pl(:,2) zeros(M,2)]';
+        p4m=[zeros(M,4) pl(:,3) zeros(M,4)]';
+        p6m=[zeros(M,6) pl(:,4) zeros(M,6)]';
+        p8m=[zeros(M,8) pl(:,5) zeros(M,8)]';
+        p10m=[zeros(M,10) pl(:,6) zeros(M,10)]';
+        
+        p2m_r=p2m*0;
+        p4m_r=p4m*0;
+        p6m_r=p6m*0;
+        p8m_r=p8m*0;
+        p10m_r=p10m*0;
+        
+        [s]=rand_sph([],M)';
+        [phi,theta,~]=cart2sph(s(1,:),s(2,:),s(3,:)); theta=pi/2-theta;
+        gamma=rand(M,1)*2*pi;
+        r = eul2rotm([phi', theta', gamma],'ZYZ'); 
+        for ii=1:M
+        %     R0=rotz(gamma(ii)*180/pi);
+        %     R1=roty(theta(ii)*180/pi);
+        %     R2=rotz(phi(ii)*180/pi);
+        %     r=R0*R2*R1;
+        %     r=eul2rotm([phi(ii), theta(ii), gamma(ii)],'ZYZ');
+            [R] = SHRotate(r(:,:,ii), Lmax);
+            p2m_r(:,ii)=R{3}*p2m(:,ii);
+            if Lmax>=4
+                p4m_r(:,ii)=R{5}*p4m(:,ii);
+            end
+            if Lmax>=6
+                p6m_r(:,ii)=R{7}*p6m(:,ii);
+            end
+            if Lmax>=8
+                p8m_r(:,ii)=R{9}*p8m(:,ii);
+            end
+            if Lmax>=10
+                p10m_r(:,ii)=R{11}*p10m(:,ii);
+            end
+        end
+        if Lmax==2
+            plm=p2m_r;
+        elseif Lmax==4
+            plm=[p2m_r;p4m_r];
+        elseif Lmax==6
+            plm=[p2m_r;p4m_r;p6m_r];
+        elseif Lmax==8
+            plm=[p2m_r;p4m_r;p6m_r;p8m_r];
+        elseif Lmax==10
+            plm=[p2m_r;p4m_r;p6m_r;p8m_r;p10m_r];
+        end
+        % if nargout==2
+            pl=pl(:,2:(Lmax/2+1));
+        % end
+        end
+        % =================================================================
+        function [x_triangle,y_triangle] = From_unit_square_to_unit_triangle(x_square,y_square)
+        % [x_triangle,y_triangle] = From_unit_square_to_unit_triangle(x_square,y_square)
+        %
+        % From x,y \in [0,1] to xp,yp whose sum is in [0,1]
+        %
+        % Inverse mapping given by From_unit_triangle_to_unit_square
+        %
+        % By: Santiago Coelho (22/09/2019)
+        sz_x=size(x_square);
+        sz_y=size(y_square);
+        x=x_square(:);
+        y=y_square(:);
+        flag1=x>y;
+        flag2=x<y;
+        xp=0*x;
+        yp=0*y;
+        xp(flag1)=x(flag1)-y(flag1)/2;
+        yp(flag1)=y(flag1)/2;
+        xp(flag2)=x(flag2)/2;
+        yp(flag2)=y(flag2)-x(flag2)/2;
+        x_triangle=reshape(xp,sz_x);
+        y_triangle=reshape(yp,sz_y);
         end
         % =================================================================
     end
