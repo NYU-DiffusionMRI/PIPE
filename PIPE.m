@@ -80,7 +80,7 @@ classdef PIPE
             b0_ids = target_b<1e-3;
             NB_target = length(target_b);
         else
-            b_isocenter = squeeze(target_b(end/2,end/2,end/2,:));
+            b_isocenter = squeeze(target_b(round(end/2),round(end/2),round(end/2),:));
             b0_ids = b_isocenter<1e-3;
             [~,~,~,NB_target] = size(target_b);
         end
