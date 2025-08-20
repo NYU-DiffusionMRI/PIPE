@@ -574,8 +574,8 @@ classdef PIPE
             % =========================================================================
             % Polynomial Regression FITTING
             % =========================================================================
-            X_moments = Compute_extended_moments(data_training',Degree);
-            X_moments_test = Compute_extended_moments(data_testing',Degree);        
+            X_moments = PIPE.Compute_extended_moments(data_training',Degree);
+            X_moments_test = PIPE.Compute_extended_moments(data_testing',Degree);        
             pinvX=pinv(X_moments);
             coeffs=pinvX*(training_objective');   
             training_obj=X_moments*coeffs;
@@ -788,7 +788,7 @@ classdef PIPE
         p8m_r=p8m*0;
         p10m_r=p10m*0;
         
-        [s]=rand_sph([],M)';
+        s = PIPE.rand_sph(M)';
         [phi,theta,~]=cart2sph(s(1,:),s(2,:),s(3,:)); theta=pi/2-theta;
         gamma=rand(M,1)*2*pi;
         r = eul2rotm([phi', theta', gamma],'ZYZ'); 
@@ -851,6 +851,66 @@ classdef PIPE
         yp(flag2)=y(flag2)-x(flag2)/2;
         x_triangle=reshape(xp,sz_x);
         y_triangle=reshape(yp,sz_y);
+        end
+        % =================================================================
+        function Moments_Extended = Compute_extended_moments(Moments,degree)
+        % Moments_Extended = Compute_extended_moments(Moments,degree)
+        %
+        % This function computes the extended matrix of moments for polynomial
+        % interpolation in multiple dimensions.
+        %
+        % Moments is [NxD] where N is the number of samples and D the dimension of
+        % the problem (the number of different moments)
+        %
+        % e.g. in 1D this extended matrix is [1 X X^2 ... X^degree]
+        %
+        %
+        % By: Santiago Coelho
+        N=size(Moments,1);
+        N_moments=size(Moments,2);
+        % Preparing data points for polynomial fitting
+        x_0=ones(N,1);
+        if degree>=1
+            x_1=Moments;
+            X=[x_0 x_1];
+        else
+                X=x_0;
+        end
+        if degree>=2
+            for current_degree=2:degree
+                combinations=nchoosek(1:(N_moments+current_degree-1),current_degree);
+                NtotalCombs=size(combinations,1);
+                flags=zeros(NtotalCombs,N_moments+current_degree-1);
+                sums=zeros(NtotalCombs,N_moments+current_degree-1);
+                which=zeros(NtotalCombs,current_degree);
+                for ii=1:NtotalCombs
+                    flags(ii,combinations(ii,:))=1;
+                    sums(ii,:)=cumsum(~flags(ii,:))+1;
+                    which(ii,:)=sums(ii,combinations(ii,:));
+                end
+                Currentx=ones(N,NtotalCombs);
+                for ii=1:NtotalCombs
+                    for jj=1:current_degree
+                        current_id=which(ii,jj);
+                        Currentx(:,ii)=Currentx(:,ii).*Moments(:,current_id);
+                    end
+                end
+                X=[X Currentx];
+            end
+        end
+        Moments_Extended=X;
+        end
+        % =================================================================
+        function s = rand_sph(nsamples)
+        % s = rand_sph(nsamples)
+        % 
+        % This function draws randomly from the unit sphere in 3D
+        if isempty(nsamples)
+            nsamples = 1;
+        end
+        N = randn(nsamples,3);
+        den = sqrt(sum(N.^2,2));
+        s = N./repmat(den,1,3);        
         end
         % =================================================================
     end
