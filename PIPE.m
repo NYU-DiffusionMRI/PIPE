@@ -791,13 +791,13 @@ classdef PIPE
         s = PIPE.rand_sph(M)';
         [phi,theta,~]=cart2sph(s(1,:),s(2,:),s(3,:)); theta=pi/2-theta;
         gamma=rand(M,1)*2*pi;
-        r = eul2rotm([phi', theta', gamma],'ZYZ'); 
+        r = PIPE.eul2rotm_local([phi', theta', gamma]); 
         for ii=1:M
         %     R0=rotz(gamma(ii)*180/pi);
         %     R1=roty(theta(ii)*180/pi);
         %     R2=rotz(phi(ii)*180/pi);
         %     r=R0*R2*R1;
-        %     r=eul2rotm([phi(ii), theta(ii), gamma(ii)],'ZYZ');
+        %     r=PIPE.eul2rotm_local([phi(ii), theta(ii), gamma(ii)]);
             [R] = SHRotate(r(:,:,ii), Lmax);
             p2m_r(:,ii)=R{3}*p2m(:,ii);
             if Lmax>=4
@@ -899,6 +899,34 @@ classdef PIPE
             end
         end
         Moments_Extended=X;
+        end
+        % =================================================================
+        function R = eul2rotm_local(EulerAngles)
+        % R = eul2rotm_local(EulerAngles)
+        % This function uses ZYZ convention
+        % output is the same as Matlab's eul2rotm(EulerAngles,'ZYZ');
+
+        R = zeros(3,3,size(EulerAngles,1),'like',EulerAngles);
+        ct = cos(EulerAngles);
+        st = sin(EulerAngles);
+        
+        %     The rotation matrix R can be constructed as follows by
+        %     ct = [cz cy cz2] and st = [sz sy sz2]
+        %
+        %     R = [  cz2*cy*cz-sz2*sz   -sz2*cy*cz-cz2*sz    sy*cz
+        %            cz2*cy*sz+sz2*cz   -sz2*cy*sz+cz2*cz    sy*sz
+        %                     -cz2*sy              sz2*sy       cy]
+        %       = Rz(tz) * Ry(ty) * Rz(tz2)
+        
+        R(1,1,:) = ct(:,1).*ct(:,3).*ct(:,2) - st(:,1).*st(:,3);
+        R(1,2,:) = -ct(:,1).*ct(:,2).*st(:,3) - st(:,1).*ct(:,3);
+        R(1,3,:) = ct(:,1).*st(:,2);
+        R(2,1,:) = st(:,1).*ct(:,3).*ct(:,2) + ct(:,1).*st(:,3);
+        R(2,2,:) = -st(:,1).*ct(:,2).*st(:,3) + ct(:,1).*ct(:,3);
+        R(2,3,:) = st(:,1).*st(:,2);
+        R(3,1,:) = -st(:,2).*ct(:,3);
+        R(3,2,:) = st(:,2).*st(:,3);
+        R(3,3,:) = ct(:,2);
         end
         % =================================================================
         function s = rand_sph(nsamples)
